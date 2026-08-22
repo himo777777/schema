@@ -1,0 +1,1 @@
+Trigger the combined fail-closed Proofloop public-build and aggregate-analytics readiness gate.
