@@ -1,0 +1,2 @@
+Trigger Pages source configuration and external verification for Proofloop public pilot.
+Commit purpose: operational deployment verification only.
