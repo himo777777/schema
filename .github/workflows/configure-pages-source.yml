@@ -1,0 +1,59 @@
+name: Configure and verify Proofloop Pages source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  issues: write
+
+jobs:
+  configure-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure gh-pages as the publishing source and verify live URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -u
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+
+          get_code=$(curl -sS -o /tmp/pages-before.json -w "%{http_code}" "${auth[@]}" "$api" || true)
+          payload='{"source":{"branch":"gh-pages","path":"/"}}'
+
+          if [ "$get_code" = "404" ]; then
+            method="POST"
+          else
+            method="PUT"
+          fi
+
+          config_code=$(curl -sS -o /tmp/pages-config.json -w "%{http_code}" -X "$method" "${auth[@]}" -H "Content-Type: application/json" -d "$payload" "$api" || true)
+          config_body=$(tr '\n' ' ' < /tmp/pages-config.json 2>/dev/null | head -c 1800)
+
+          live_status=""
+          live_ok="false"
+          for attempt in $(seq 1 36); do
+            live_status=$(curl -L -sS -o /tmp/proofloop-live.html -w "%{http_code}" --max-time 20 "https://himo777777.github.io/schema/" || true)
+            if [ "$live_status" = "200" ] && grep -q "Opening Proofloop" /tmp/proofloop-live.html; then
+              live_ok="true"
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$live_ok" = "true" ]; then
+            title="Proofloop Pages configuration: PASS"
+            result="PASS — the public pilot loader returned HTTP 200."
+          else
+            title="Proofloop Pages configuration: FAIL"
+            result="FAIL — public URL did not return the expected loader. External distribution remains paused."
+          fi
+
+          gh issue create \
+            --title "$title" \
+            --body "Result: ${result}\n\nPages GET before configuration: ${get_code}\nConfiguration request: ${method} → HTTP ${config_code}\nLive HTTP: ${live_status:-unavailable}\nCommit: ${GITHUB_SHA}\n\nAPI response (truncated):\n\`\`\`json\n${config_body}\n\`\`\`\n\nPublic URL: https://himo777777.github.io/schema/"
