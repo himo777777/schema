@@ -1,1 +1,2 @@
-Trigger the combined fail-closed Proofloop public-build and aggregate-analytics readiness gate.
+Trigger the corrected combined Proofloop public-build and aggregate-analytics readiness gate.
+Revision: YAML indentation repaired; production pilot counters remain untouched by the smoke test.
