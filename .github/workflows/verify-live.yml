@@ -51,6 +51,7 @@ jobs:
 
           loader_ok="false"
           remote_bundle_ok="false"
+          app_analytics_mode_ok="false"
           loader_status=""
           remote_error=""
           for attempt in $(seq 1 36); do
@@ -80,11 +81,15 @@ jobs:
               remote_bundle_ok="true"
             fi
 
+            if [ "$remote_bundle_ok" = "true" ] && ! grep -q "trackOnly=true" /tmp/proofloop-remote.html; then
+              app_analytics_mode_ok="true"
+            fi
+
             if [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ]; then break; fi
             sleep 10
           done
 
-          analytics_ns="proofloop-analytics-smoke-20260822"
+          analytics_ns="proofloop-analytics-standard-smoke-20260822"
           analytics_action="transport_test"
           analytics_key="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           counter_url="https://counterapi.com/api/${analytics_ns}/${analytics_action}/${analytics_key}"
@@ -93,7 +98,8 @@ jobs:
           initial_code=$(curl -sS -D /tmp/initial.headers -o /tmp/initial.json -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?readOnly=true" || true)
           initial_value=$(python3 -c "import json; print(int(json.load(open('/tmp/initial.json')).get('value', 0)))" 2>/dev/null || printf '%s' -1)
 
-          track_code=$(curl -sS -D /tmp/track.headers -o /tmp/track.body -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?trackOnly=true&source=github-smoke" || true)
+          increment_code=$(curl -sS -D /tmp/increment.headers -o /tmp/increment.json -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?source=github-smoke" || true)
+          increment_value=$(python3 -c "import json; print(int(json.load(open('/tmp/increment.json')).get('value', -1)))" 2>/dev/null || printf '%s' -1)
 
           final_code=""
           final_value=-1
@@ -104,20 +110,20 @@ jobs:
             sleep 2
           done
 
-          cors_header=$(grep -i '^access-control-allow-origin:' /tmp/final.headers 2>/dev/null | head -1 | cut -d: -f2- | xargs || true)
-          content_type=$(grep -i '^content-type:' /tmp/final.headers 2>/dev/null | head -1 | cut -d: -f2- | xargs || true)
+          cors_header=$(grep -i '^access-control-allow-origin:' /tmp/final.headers 2>/dev/null | head -1 | cut -d: -f2- | tr -d '\r' | xargs || true)
+          content_type=$(grep -i '^content-type:' /tmp/final.headers 2>/dev/null | head -1 | cut -d: -f2- | tr -d '\r' | xargs || true)
           analytics_http_ok="false"
-          if [ "$initial_code" = "200" ] && { [ "$track_code" = "200" ] || [ "$track_code" = "204" ]; } && [ "$final_code" = "200" ]; then analytics_http_ok="true"; fi
+          if [ "$initial_code" = "200" ] && [ "$increment_code" = "200" ] && [ "$final_code" = "200" ]; then analytics_http_ok="true"; fi
           analytics_increment_ok="false"
-          if [ "$initial_value" -ge 0 ] && [ "$final_value" -gt "$initial_value" ]; then analytics_increment_ok="true"; fi
+          if [ "$initial_value" -ge 0 ] && { [ "$increment_value" -gt "$initial_value" ] || [ "$final_value" -gt "$initial_value" ]; }; then analytics_increment_ok="true"; fi
           analytics_cors_ok="false"
           if [ "$cors_header" = "*" ] || [ "$cors_header" = "$origin" ]; then analytics_cors_ok="true"; fi
           analytics_json_ok="false"
-          if [ "$final_value" -ge 0 ] && printf '%s' "$content_type" | grep -qi 'application/json'; then analytics_json_ok="true"; fi
+          if [ "$increment_value" -ge 0 ] && [ "$final_value" -ge 0 ] && printf '%s' "$content_type" | grep -qi 'application/json'; then analytics_json_ok="true"; fi
           analytics_ok="false"
           if [ "$analytics_http_ok" = "true" ] && [ "$analytics_increment_ok" = "true" ] && [ "$analytics_cors_ok" = "true" ] && [ "$analytics_json_ok" = "true" ]; then analytics_ok="true"; fi
 
-          if [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ] && [ "$analytics_ok" = "true" ]; then
+          if [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ] && [ "$app_analytics_mode_ok" = "true" ] && [ "$analytics_ok" = "true" ]; then
             title="Proofloop pilot readiness: PASS"
             result="PASS — exact public build and browser-compatible aggregate analytics transport are operational."
           else
@@ -125,9 +131,10 @@ jobs:
             result="FAIL — creator outreach remains paused."
           fi
 
+          increment_preview=$(tr '\n' ' ' < /tmp/increment.json 2>/dev/null | head -c 500)
           final_preview=$(tr '\n' ' ' < /tmp/final.json 2>/dev/null | head -c 500)
           gh issue edit "$issue_number" \
             --title "$title" \
-            --body "Result: ${result}\n\n### Public build\nLocal bundle: ${local_bundle_ok}\nPublic loader: ${loader_ok} (HTTP ${loader_status:-unavailable})\nPublic remote bundle: ${remote_bundle_ok}\nRemote error: ${remote_error:-none}\nApproved SHA-256: ${expected_sha}\nPages settings GET: HTTP ${pages_get_code}\n\n### Aggregate analytics transport\nThrowaway namespace: ${analytics_ns}\nProduction pilot counters touched: no\nInitial: HTTP ${initial_code}, value ${initial_value}\nTrack-only: HTTP ${track_code}\nFinal: HTTP ${final_code}, value ${final_value}\nHTTP gate: ${analytics_http_ok}\nIncrement gate: ${analytics_increment_ok}\nJSON gate: ${analytics_json_ok}\nCORS gate: ${analytics_cors_ok}\nAccess-Control-Allow-Origin: ${cors_header:-missing}\nContent-Type: ${content_type:-missing}\nFinal response: ${final_preview:-empty}\n\nCommit: ${GITHUB_SHA}\nRun: ${run_url}\nPublic URL: ${public_base}/\n\nPages settings (truncated):\n\`\`\`json\n${pages_body}\n\`\`\`"
+            --body "Result: ${result}\n\n### Public build\nLocal bundle: ${local_bundle_ok}\nPublic loader: ${loader_ok} (HTTP ${loader_status:-unavailable})\nPublic remote bundle: ${remote_bundle_ok}\nApp uses supported increment mode: ${app_analytics_mode_ok}\nRemote error: ${remote_error:-none}\nApproved SHA-256: ${expected_sha}\nPages settings GET: HTTP ${pages_get_code}\n\n### Aggregate analytics transport\nThrowaway namespace: ${analytics_ns}\nProduction pilot counters touched: no\nInitial: HTTP ${initial_code}, value ${initial_value}\nIncrement: HTTP ${increment_code}, returned value ${increment_value}\nFinal read-only: HTTP ${final_code}, value ${final_value}\nHTTP gate: ${analytics_http_ok}\nIncrement gate: ${analytics_increment_ok}\nJSON gate: ${analytics_json_ok}\nCORS gate: ${analytics_cors_ok}\nAccess-Control-Allow-Origin: ${cors_header:-missing}\nContent-Type: ${content_type:-missing}\nIncrement response: ${increment_preview:-empty}\nFinal response: ${final_preview:-empty}\n\nCommit: ${GITHUB_SHA}\nRun: ${run_url}\nPublic URL: ${public_base}/\n\nPages settings (truncated):\n\`\`\`json\n${pages_body}\n\`\`\`"
 
-          [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ] && [ "$analytics_ok" = "true" ]
+          [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ] && [ "$app_analytics_mode_ok" = "true" ] && [ "$analytics_ok" = "true" ]
