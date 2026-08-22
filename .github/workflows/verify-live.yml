@@ -1,4 +1,4 @@
-name: Configure and verify Proofloop live pilot
+name: Verify Proofloop live pilot
 
 on:
   push:
@@ -17,58 +17,89 @@ jobs:
       - name: Checkout gh-pages
         uses: actions/checkout@v4
 
-      - name: Verify bundle, configure Pages source, and check public URL
+      - name: Verify local source and every public bundle asset
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -u
+          expected_sha="5d6984e7030acb725a0df73cadbddf35063fe0e9563e17e850a07de8fe11235f"
+          public_base="https://himo777777.github.io/schema"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           issue_url=$(gh issue create \
             --title "Proofloop live verification: RUNNING" \
-            --body "Source integrity, Pages configuration and public HTTP verification are running. Run: ${run_url}. Distribution remains paused until PASS.")
+            --body "Exact local and public bundle verification is running. Run: ${run_url}. Distribution remains paused until PASS.")
           issue_number="${issue_url##*/}"
 
-          bundle_ok="false"
-          cat pilot/site.part-* > /tmp/proofloop-site.b64
-          if base64 --decode /tmp/proofloop-site.b64 | gzip --decompress > /tmp/proofloop-full.html \
-            && echo "5d6984e7030acb725a0df73cadbddf35063fe0e9563e17e850a07de8fe11235f  /tmp/proofloop-full.html" | sha256sum --check --strict \
-            && grep -q "Proofloop" /tmp/proofloop-full.html \
-            && grep -q "Prediction mode" /tmp/proofloop-full.html; then
-            bundle_ok="true"
+          local_bundle_ok="false"
+          cat pilot/site.part-* > /tmp/proofloop-local.b64
+          if base64 --decode /tmp/proofloop-local.b64 | gzip --decompress > /tmp/proofloop-local.html \
+            && echo "${expected_sha}  /tmp/proofloop-local.html" | sha256sum --check --strict \
+            && grep -qi "Proofloop" /tmp/proofloop-local.html \
+            && grep -qi "Prediction Mode" /tmp/proofloop-local.html; then
+            local_bundle_ok="true"
           fi
 
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
-          get_code=$(curl -sS -o /tmp/pages-before.json -w "%{http_code}" "${auth[@]}" "$api" || true)
-          payload='{"source":{"branch":"gh-pages","path":"/"}}'
-          if [ "$get_code" = "404" ]; then method="POST"; else method="PUT"; fi
-          config_code=$(curl -sS -o /tmp/pages-config.json -w "%{http_code}" -X "$method" "${auth[@]}" -H "Content-Type: application/json" -d "$payload" "$api" || true)
-          config_body=$(tr '\n' ' ' < /tmp/pages-config.json 2>/dev/null | head -c 1800)
+          pages_get_code=$(curl -sS -o /tmp/pages.json -w "%{http_code}" "${auth[@]}" "$api" || true)
+          pages_body=$(tr '\n' ' ' < /tmp/pages.json 2>/dev/null | head -c 1800)
+          config_action="SKIPPED"
+          config_code="n/a"
+          if [ "$pages_get_code" = "404" ]; then
+            config_action="POST"
+            payload='{"source":{"branch":"gh-pages","path":"/"}}'
+            config_code=$(curl -sS -o /tmp/pages-config.json -w "%{http_code}" -X POST "${auth[@]}" -H "Content-Type: application/json" -d "$payload" "$api" || true)
+          fi
 
-          live_status=""
-          live_ok="false"
-          curl_error=""
+          loader_ok="false"
+          remote_bundle_ok="false"
+          loader_status=""
+          remote_error=""
+
           for attempt in $(seq 1 36); do
-            live_status=$(curl -L -sS -o /tmp/live.html -w "%{http_code}" --max-time 20 "https://himo777777.github.io/schema/" 2>/tmp/curl-error || true)
-            curl_error=$(tr '\n' ' ' < /tmp/curl-error 2>/dev/null | head -c 500)
-            if [ "$live_status" = "200" ] && grep -q "Opening Proofloop" /tmp/live.html; then
-              live_ok="true"
+            loader_status=$(curl -L -sS -o /tmp/proofloop-loader.html -w "%{http_code}" --max-time 20 "${public_base}/" 2>/tmp/loader-error || true)
+            if [ "$loader_status" = "200" ] && grep -q "Opening Proofloop" /tmp/proofloop-loader.html; then
+              loader_ok="true"
+            fi
+
+            : > /tmp/proofloop-remote.b64
+            remote_assets_ok="true"
+            for i in $(seq 0 5); do
+              part=$(printf "%02d" "$i")
+              part_status=$(curl -L -sS -o "/tmp/site.part-${part}" -w "%{http_code}" --max-time 20 "${public_base}/pilot/site.part-${part}" 2>/tmp/part-error || true)
+              if [ "$part_status" != "200" ]; then
+                remote_assets_ok="false"
+                remote_error="part-${part} HTTP ${part_status}: $(tr '\n' ' ' < /tmp/part-error | head -c 300)"
+                break
+              fi
+              tr -d '\r\n' < "/tmp/site.part-${part}" >> /tmp/proofloop-remote.b64
+            done
+
+            if [ "$remote_assets_ok" = "true" ] \
+              && base64 --decode /tmp/proofloop-remote.b64 | gzip --decompress > /tmp/proofloop-remote.html \
+              && echo "${expected_sha}  /tmp/proofloop-remote.html" | sha256sum --check --strict \
+              && grep -qi "Proofloop" /tmp/proofloop-remote.html \
+              && grep -qi "Prediction Mode" /tmp/proofloop-remote.html; then
+              remote_bundle_ok="true"
+            fi
+
+            if [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ]; then
               break
             fi
             sleep 10
           done
 
-          if [ "$bundle_ok" = "true" ] && [ "$live_ok" = "true" ]; then
+          if [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ]; then
             title="Proofloop live verification: PASS"
-            result="PASS — exact bundle verified and public loader returned HTTP 200."
+            result="PASS — public loader and every hosted bundle part reconstruct to the exact approved SHA-256."
           else
             title="Proofloop live verification: FAIL"
-            result="FAIL — distribution remains paused."
+            result="FAIL — external distribution remains paused."
           fi
 
           gh issue edit "$issue_number" \
             --title "$title" \
-            --body "Result: ${result}\n\nBundle integrity: ${bundle_ok}\nPages GET before configuration: ${get_code}\nConfiguration request: ${method} → HTTP ${config_code}\nLive HTTP: ${live_status:-unavailable}\nCurl error: ${curl_error:-none}\nCommit: ${GITHUB_SHA}\nRun: ${run_url}\n\nAPI response (truncated):\n\`\`\`json\n${config_body}\n\`\`\`\n\nPublic URL: https://himo777777.github.io/schema/"
+            --body "Result: ${result}\n\nLocal bundle: ${local_bundle_ok}\nPublic loader: ${loader_ok} (HTTP ${loader_status:-unavailable})\nPublic remote bundle: ${remote_bundle_ok}\nRemote error: ${remote_error:-none}\nExpected SHA-256: ${expected_sha}\nPages settings GET: HTTP ${pages_get_code}\nPages configuration action: ${config_action} → ${config_code}\nCommit: ${GITHUB_SHA}\nRun: ${run_url}\n\nPages settings (truncated):\n\`\`\`json\n${pages_body}\n\`\`\`\n\nPublic URL: ${public_base}/"
 
-          [ "$bundle_ok" = "true" ] && [ "$live_ok" = "true" ]
+          [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ]
