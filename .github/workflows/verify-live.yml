@@ -31,7 +31,6 @@ jobs:
             --body "Public bundle and throwaway aggregate-analytics transport are being verified. Production pilot counters are not touched. Run: ${run_url}")
           issue_number="${issue_url##*/}"
 
-          # 1. Verify exact local bundle.
           local_bundle_ok="false"
           cat pilot/site.part-* > /tmp/proofloop-local.b64
           if base64 --decode /tmp/proofloop-local.b64 | gzip --decompress > /tmp/proofloop-local.html \
@@ -41,7 +40,6 @@ jobs:
             local_bundle_ok="true"
           fi
 
-          # 2. Read Pages state. Configure only if no site exists.
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
           pages_get_code=$(curl -sS -o /tmp/pages.json -w "%{http_code}" "${auth[@]}" "$api" || true)
@@ -51,7 +49,6 @@ jobs:
             curl -sS -o /tmp/pages-config.json -X POST "${auth[@]}" -H "Content-Type: application/json" -d "$payload" "$api" || true
           fi
 
-          # 3. Verify the loader and every public bundle part reconstruct to the exact SHA.
           loader_ok="false"
           remote_bundle_ok="false"
           loader_status=""
@@ -87,7 +84,6 @@ jobs:
             sleep 10
           done
 
-          # 4. Smoke-test CounterAPI with an isolated key: read, trackOnly increment, read.
           analytics_ns="proofloop-analytics-smoke-20260822"
           analytics_action="transport_test"
           analytics_key="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -95,15 +91,7 @@ jobs:
           origin="https://himo777777.github.io"
 
           initial_code=$(curl -sS -D /tmp/initial.headers -o /tmp/initial.json -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?readOnly=true" || true)
-          initial_value=$(python3 - <<'PY'
-import json
-try:
-    with open('/tmp/initial.json') as f:
-        print(int(json.load(f).get('value', 0)))
-except Exception:
-    print(-1)
-PY
-          )
+          initial_value=$(python3 -c "import json; print(int(json.load(open('/tmp/initial.json')).get('value', 0)))" 2>/dev/null || printf '%s' -1)
 
           track_code=$(curl -sS -D /tmp/track.headers -o /tmp/track.body -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?trackOnly=true&source=github-smoke" || true)
 
@@ -111,15 +99,7 @@ PY
           final_value=-1
           for attempt in $(seq 1 12); do
             final_code=$(curl -sS -D /tmp/final.headers -o /tmp/final.json -w "%{http_code}" -H "Origin: ${origin}" "${counter_url}?readOnly=true" || true)
-            final_value=$(python3 - <<'PY'
-import json
-try:
-    with open('/tmp/final.json') as f:
-        print(int(json.load(f).get('value', -1)))
-except Exception:
-    print(-1)
-PY
-            )
+            final_value=$(python3 -c "import json; print(int(json.load(open('/tmp/final.json')).get('value', -1)))" 2>/dev/null || printf '%s' -1)
             if [ "$initial_value" -ge 0 ] && [ "$final_value" -gt "$initial_value" ]; then break; fi
             sleep 2
           done
@@ -137,7 +117,6 @@ PY
           analytics_ok="false"
           if [ "$analytics_http_ok" = "true" ] && [ "$analytics_increment_ok" = "true" ] && [ "$analytics_cors_ok" = "true" ] && [ "$analytics_json_ok" = "true" ]; then analytics_ok="true"; fi
 
-          # 5. Fail closed.
           if [ "$local_bundle_ok" = "true" ] && [ "$loader_ok" = "true" ] && [ "$remote_bundle_ok" = "true" ] && [ "$analytics_ok" = "true" ]; then
             title="Proofloop pilot readiness: PASS"
             result="PASS — exact public build and browser-compatible aggregate analytics transport are operational."
