@@ -1,0 +1,1 @@
+Trigger exact public bundle SHA-256 verification after replacing false-negative checks.
