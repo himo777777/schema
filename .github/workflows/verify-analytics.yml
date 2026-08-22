@@ -1,0 +1,99 @@
+name: Verify Proofloop aggregate analytics transport
+
+on:
+  push:
+    branches: [gh-pages]
+    paths:
+      - 'pilot/analytics-smoke-trigger.txt'
+      - '.github/workflows/verify-analytics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify CounterAPI increment, read-only access, JSON shape and browser CORS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -u
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          issue_url=$(gh issue create \
+            --title "Proofloop analytics transport: RUNNING" \
+            --body "A throwaway namespace is testing event increment, read-only retrieval and browser CORS. Production pilot counters are untouched. Run: ${run_url}")
+          issue_number="${issue_url##*/}"
+
+          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ns="proofloop-analytics-smoke-20260822"
+          action="transport_test"
+          key="run-${nonce}"
+          base="https://counterapi.com/api/${ns}/${action}/${key}"
+          origin="https://himo777777.github.io"
+
+          initial_code=$(curl -sS -D /tmp/initial.headers -o /tmp/initial.json -w "%{http_code}" \
+            -H "Origin: ${origin}" "${base}?readOnly=true" || true)
+          initial_value=$(python3 - <<'PY'
+import json
+try:
+    with open('/tmp/initial.json') as f:
+        data=json.load(f)
+    print(int(data.get('value', 0)))
+except Exception:
+    print(-1)
+PY
+          )
+
+          track_code=$(curl -sS -D /tmp/track.headers -o /tmp/track.body -w "%{http_code}" \
+            -H "Origin: ${origin}" "${base}?trackOnly=true&source=github-smoke" || true)
+
+          final_value=-1
+          final_code=""
+          for attempt in $(seq 1 12); do
+            final_code=$(curl -sS -D /tmp/final.headers -o /tmp/final.json -w "%{http_code}" \
+              -H "Origin: ${origin}" "${base}?readOnly=true" || true)
+            final_value=$(python3 - <<'PY'
+import json
+try:
+    with open('/tmp/final.json') as f:
+        data=json.load(f)
+    print(int(data.get('value', -1)))
+except Exception:
+    print(-1)
+PY
+            )
+            if [ "$final_value" -ge 1 ] && [ "$final_value" -gt "$initial_value" ]; then break; fi
+            sleep 2
+          done
+
+          cors_header=$(awk 'BEGIN{IGNORECASE=1} /^access-control-allow-origin:/{gsub("\r",""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' /tmp/final.headers)
+          content_type=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub("\r",""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' /tmp/final.headers)
+          track_preview=$(tr '\n' ' ' < /tmp/track.body | head -c 500)
+          final_preview=$(tr '\n' ' ' < /tmp/final.json | head -c 500)
+
+          cors_ok="false"
+          if [ "$cors_header" = "*" ] || [ "$cors_header" = "$origin" ]; then cors_ok="true"; fi
+          increment_ok="false"
+          if [ "$initial_value" -ge 0 ] && [ "$final_value" -gt "$initial_value" ]; then increment_ok="true"; fi
+          http_ok="false"
+          if [ "$initial_code" = "200" ] && { [ "$track_code" = "200" ] || [ "$track_code" = "204" ]; } && [ "$final_code" = "200" ]; then http_ok="true"; fi
+          json_ok="false"
+          if [ "$final_value" -ge 0 ] && printf '%s' "$content_type" | grep -qi 'application/json'; then json_ok="true"; fi
+
+          if [ "$http_ok" = "true" ] && [ "$increment_ok" = "true" ] && [ "$cors_ok" = "true" ] && [ "$json_ok" = "true" ]; then
+            title="Proofloop analytics transport: PASS"
+            result="PASS — browser-compatible aggregate event increment and read-only retrieval work."
+          else
+            title="Proofloop analytics transport: FAIL"
+            result="FAIL — creator traffic must remain paused until analytics transport is repaired."
+          fi
+
+          gh issue edit "$issue_number" \
+            --title "$title" \
+            --body "Result: ${result}\n\nThrowaway namespace: ${ns}\nProduction counters touched: no\nInitial: HTTP ${initial_code}, value ${initial_value}\nTrack-only: HTTP ${track_code}\nFinal: HTTP ${final_code}, value ${final_value}\nHTTP gate: ${http_ok}\nIncrement gate: ${increment_ok}\nJSON gate: ${json_ok}\nCORS gate: ${cors_ok}\nAccess-Control-Allow-Origin: ${cors_header:-missing}\nContent-Type: ${content_type:-missing}\nRun: ${run_url}\n\nTrack response (truncated):\n\`\`\`\n${track_preview}\n\`\`\`\nFinal response (truncated):\n\`\`\`json\n${final_preview}\n\`\`\`"
+
+          [ "$http_ok" = "true" ] && [ "$increment_ok" = "true" ] && [ "$cors_ok" = "true" ] && [ "$json_ok" = "true" ]
