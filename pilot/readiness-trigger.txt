@@ -1,2 +1,2 @@
-Trigger the corrected combined Proofloop public-build and aggregate-analytics readiness gate.
-Revision: YAML indentation repaired; production pilot counters remain untouched by the smoke test.
+Trigger Proofloop readiness gate with documented standard increment transport and explicit public-app migration check.
+Production pilot counters remain untouched by smoke tests.
