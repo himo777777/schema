@@ -20,6 +20,12 @@ jobs:
         shell: bash
         run: |
           set -u
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          issue_url=$(gh issue create \
+            --title "Proofloop Pages configuration: RUNNING" \
+            --body "Configuration and external live verification started. Run: ${run_url}. External distribution remains paused until PASS.")
+          issue_number="${issue_url##*/}"
+
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
@@ -54,6 +60,6 @@ jobs:
             result="FAIL — public URL did not return the expected loader. External distribution remains paused."
           fi
 
-          gh issue create \
+          gh issue edit "$issue_number" \
             --title "$title" \
-            --body "Result: ${result}\n\nPages GET before configuration: ${get_code}\nConfiguration request: ${method} → HTTP ${config_code}\nLive HTTP: ${live_status:-unavailable}\nCommit: ${GITHUB_SHA}\n\nAPI response (truncated):\n\`\`\`json\n${config_body}\n\`\`\`\n\nPublic URL: https://himo777777.github.io/schema/"
+            --body "Result: ${result}\n\nPages GET before configuration: ${get_code}\nConfiguration request: ${method} → HTTP ${config_code}\nLive HTTP: ${live_status:-unavailable}\nCommit: ${GITHUB_SHA}\nRun: ${run_url}\n\nAPI response (truncated):\n\`\`\`json\n${config_body}\n\`\`\`\n\nPublic URL: https://himo777777.github.io/schema/"
