@@ -1,0 +1,1 @@
+Trigger CounterAPI write/read/CORS smoke test using a throwaway namespace. Production Proofloop counters must remain untouched.
