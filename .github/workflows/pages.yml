@@ -1,8 +1,6 @@
-name: Deploy Proofloop pilot to GitHub Pages
+name: Deploy Proofloop pilot to GitHub Pages (manual fallback)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
